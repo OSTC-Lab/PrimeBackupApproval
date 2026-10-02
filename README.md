@@ -31,7 +31,7 @@ PrimeBackupApproval 是 PrimeBackup 的 MCDR 附属插件，
 
 4. 按 PB 提示确认，后续倒计时和回档过程由 PB 执行。
 
-默认审批窗口为 **30 分钟**；通过后有效期为 **10 分钟**，**执行次数上限为 10 次**。
+默认审批窗口为 **3 小时**；通过后有效期为 **30 分钟**，**执行次数上限为 10 次**。
 这些规则均可配置。
 
 ## 安装部署
@@ -108,10 +108,10 @@ PrimeBackupApproval 是 PrimeBackup 的 MCDR 附属插件，
 | `approval_center.base_url`                | `http://127.0.0.1:8731` | 审批中心地址             |
 | `approval_center.client_id`               | 空，需填写              | 当前服务器专用的接入身份 |
 | `approval_center.client_secret`           | 空，需填写              | 接入密钥                 |
-| `approval_center.request_timeout_seconds` | `10`                    | HTTP 请求超时            |
+| `approval_center.request_timeout_seconds` | `2`                     | HTTP 请求超时            |
 | `approval.request_permission`             | `1`                     | 玩家申请权限下限         |
-| `approval.decision_timeout_seconds`       | `1800`                  | 申请的审批窗口           |
-| `approval.grant_validity_seconds`         | `600`                   | 通过后的使用窗口         |
+| `approval.decision_timeout_seconds`       | `10800`                 | 申请的审批窗口           |
+| `approval.grant_validity_seconds`         | `1800`                  | 通过后的使用窗口         |
 | `approval.max_uses`                       | `10`                    | 每张批准的执行次数上限   |
 | `approval.max_active_per_player`          | `20`                    | 每个玩家的有效审批上限   |
 | `polling.interval_seconds`                | `1`                     | 待审批结果查询间隔       |

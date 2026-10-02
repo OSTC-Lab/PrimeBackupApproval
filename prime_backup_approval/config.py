@@ -15,7 +15,7 @@ class CenterConfig(ConfigModel):
 	base_url: str = 'http://127.0.0.1:8731'
 	client_id: str = ''
 	client_secret: SecretStr = SecretStr('')
-	request_timeout_seconds: PositiveSeconds = 10
+	request_timeout_seconds: PositiveSeconds = 2
 
 	@property
 	def configured(self) -> bool:
@@ -37,8 +37,8 @@ class CenterConfig(ConfigModel):
 
 class ApprovalConfig(ConfigModel):
 	request_permission: int = Field(default=1, ge=0, le=4)
-	decision_timeout_seconds: PositiveInt = 1800
-	grant_validity_seconds: PositiveInt = 600
+	decision_timeout_seconds: PositiveInt = 10800
+	grant_validity_seconds: PositiveInt = 1800
 	max_uses: PositiveInt = 10
 	max_active_per_player: PositiveInt = 20
 

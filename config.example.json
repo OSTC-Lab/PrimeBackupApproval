@@ -5,12 +5,12 @@
         "base_url": "http://127.0.0.1:8731",
         "client_id": "",
         "client_secret": "",
-        "request_timeout_seconds": 10
+        "request_timeout_seconds": 2
     },
     "approval": {
         "request_permission": 1,
-        "decision_timeout_seconds": 1800,
-        "grant_validity_seconds": 600,
+        "decision_timeout_seconds": 10800,
+        "grant_validity_seconds": 1800,
         "max_uses": 10,
         "max_active_per_player": 20
     },
