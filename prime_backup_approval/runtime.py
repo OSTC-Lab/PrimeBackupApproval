@@ -3,13 +3,15 @@ import threading
 import time
 
 import httpx
-from mcdreforged.api.all import PluginServerInterface
+from mcdreforged.api.all import PluginServerInterface, RColor, RText, RTextBase, RTextList
 
 from prime_backup_approval.approval_center_sdk import ApprovalCenterAPIError, ApprovalCenterClient
 from prime_backup_approval.approval_manager import ApprovalManager, OperationError, ProcessingStopped
 from prime_backup_approval.config import Config
-from prime_backup_approval.pb_adapter import PBAdapter, PBAdapterError
-from prime_backup_approval.requests import ApplyRequest, NotifyRequest, PlayerRequest, WorkRequest
+from prime_backup_approval.diagnostics import FailureContext, failure_context, format_failure
+from prime_backup_approval.pb_adapter import PBAdapter
+from prime_backup_approval.requests import ApplyRequest, BackRequest, CancelRequest, NotifyRequest, PlayerRequest, ShowRequest, WorkRequest
+from prime_backup_approval.text import button, message, reply
 
 
 class Runtime:
@@ -45,7 +47,7 @@ class Runtime:
 			first_seen = self.player_seen(request.player)
 		if not self.config.enabled or self._stop.is_set() or not self.ready:
 			if isinstance(request, PlayerRequest):
-				request.source.reply('审批扩展已停用或正在初始化／恢复，请稍后重试。')
+				reply(request.source, '审批扩展已停用或正在初始化／恢复，请稍后重试。', RColor.yellow)
 			return
 		if first_seen and isinstance(request, PlayerRequest):
 			self._jobs.put(NotifyRequest(request.player))
@@ -74,27 +76,25 @@ class Runtime:
 		with self._online_lock:
 			return set(self._online)
 
-	def _notify(self, player: str, text: str) -> bool:
+	def _notify(self, player: str, text: RTextBase) -> bool:
 		with self._online_lock:
 			if player not in self._online or self._stop.is_set() or not self.server.is_server_running():
 				return False
-			self.server.tell(player, text)
+			self.server.tell(player, message(text))
 			return True
 
-	def status_text(self) -> str:
+	def status_text(self) -> RTextBase:
 		if not self.config.approval_center.configured:
-			return '审批扩展：等待填写 client_id 和 client_secret，填写后重载插件。'
-		return f'审批扩展：{"就绪" if self.ready else "停用／恢复中"}；PB hook：{"已安装" if self.adapter.available else "等待就绪"}。'
+			return RText('等待填写 client_id 和 client_secret，填写后重载插件。', RColor.yellow)
+		return RTextList(
+			'审批服务：', RText('就绪' if self.ready else '停用／恢复中', RColor.green if self.ready else RColor.yellow),
+			' · PB 连接：', RText('已就绪' if self.adapter.available else '等待就绪', RColor.green if self.adapter.available else RColor.yellow),
+		)
 
-	def _log_error(self, error: Exception) -> None:
-		if isinstance(error, ApprovalCenterAPIError):
-			description = f'{type(error).__name__} status={error.status_code} code={error.code}'
-		elif isinstance(error, PBAdapterError):
-			description = f'PBAdapterError: {error}'
-		else:
-			description = type(error).__name__
+	def _log_error(self, error: Exception, context: FailureContext) -> None:
+		description = format_failure(error, context, secret=self.config.approval_center.client_secret.get_secret_value())
 		if description != self._last_error:
-			self.server.logger.warning(f'Approval processing failed: {description}')
+			self.server.logger.warning(description)
 			self._last_error = description
 
 	def _maintenance(self) -> None:
@@ -104,19 +104,23 @@ class Runtime:
 			self.ready = False
 			self._pb_identity = identity
 			self._next_recovery = 0
-		if not self.adapter.refresh():
+		with failure_context(FailureContext('pb.refresh')):
+			available = self.adapter.refresh()
+		if not available:
 			self.ready = False
 			return
 		if not self.ready:
 			if time.monotonic() < self._next_recovery:
 				return
-			with self._online_lock:
-				self._online.update(self.adapter.online_players())
-			self.manager.recover()
+			with failure_context(FailureContext('recovery')):
+				with self._online_lock:
+					self._online.update(self.adapter.online_players())
+				self.manager.recover()
 			self.ready = True
 			self._last_error = None
 			self.server.logger.info('Approval center available; processing ready')
-		self.manager.poll()
+		with failure_context(FailureContext('poll')):
+			self.manager.poll()
 
 	def _report_failure(self, request: WorkRequest, error: Exception) -> None:
 		if isinstance(request, PlayerRequest):
@@ -128,9 +132,15 @@ class Runtime:
 				message = '申请提交结果待确认，请查询已有单据或重新按正常流程申请。'
 			else:
 				message = '本次处理失败，请查询当前单据并稍后重试；详细信息已写入日志。'
-			request.source.reply(message)
+			reply(request.source, RTextList(
+				RText(message, RColor.red), ' ', button('查看单据', f'{self.config.command.prefix} list', run=True),
+			))
 		if not isinstance(error, OperationError):
-			self._log_error(error)
+			self._log_error(error, FailureContext(
+				phase=type(request).__name__, player=request.player,
+				approval_id=request.approval_id if isinstance(request, (ShowRequest, CancelRequest)) else None,
+				backup=request.backup_raw if isinstance(request, (ApplyRequest, BackRequest)) else None,
+			))
 		if isinstance(error, httpx.HTTPError) and not (
 			isinstance(error, ApprovalCenterAPIError) and error.status_code in (404, 409, 422)
 		):
@@ -148,7 +158,7 @@ class Runtime:
 						break
 					except Exception as error:
 						self.ready = False
-						self._log_error(error)
+						self._log_error(error, FailureContext('maintenance'))
 						self._next_recovery = time.monotonic() + self.config.polling.retry_interval_seconds
 						self._next_maintenance = self._next_recovery
 					else:
@@ -161,7 +171,7 @@ class Runtime:
 					break
 				if not self.ready:
 					if isinstance(request, PlayerRequest):
-						request.source.reply('审批扩展正在恢复，请稍后重试。')
+							reply(request.source, '审批扩展正在恢复，请稍后重试。', RColor.yellow)
 					continue
 				try:
 					if isinstance(request, PlayerRequest):

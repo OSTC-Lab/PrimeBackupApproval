@@ -1,7 +1,8 @@
-from mcdreforged.api.all import CommandContext, CommandSource, GreedyText, Integer, Literal, PlayerCommandSource, Text
+from mcdreforged.api.all import CommandContext, CommandSource, GreedyText, Integer, Literal, PlayerCommandSource, RColor, RText, RTextList, Text
 
 from prime_backup_approval.requests import ApplyRequest, CancelRequest, ListRequest, ShowRequest, StatusRequest
 from prime_backup_approval.runtime import Runtime
+from prime_backup_approval.text import command, message, reply
 
 
 class Commands:
@@ -17,7 +18,7 @@ class Commands:
 			return isinstance(source, PlayerCommandSource) and source.has_permission(self.runtime.config.approval.request_permission)
 
 		def player_command(name: str) -> Literal:
-			return Literal(name).requires(permitted, lambda: '该命令供具有申请资格的玩家使用。')
+			return Literal(name).requires(permitted, lambda: message('该命令供具有申请资格的玩家使用。', RColor.red))
 
 		root.then(player_command('apply').then(Text('backup').then(GreedyText('reason').runs(self.apply))))
 		root.then(player_command('show').then(Integer('approval_id').at_min(1).runs(self.show)))
@@ -29,14 +30,12 @@ class Commands:
 		self.runtime.server.register_help_message(self.prefix, 'PrimeBackup 回档审批')
 
 	def help(self, source: CommandSource) -> None:
-		source.reply('\n'.join((
-			'PrimeBackupApproval：',
-			f'{self.prefix} apply <备份> <理由>：申请默认回档',
-			f'{self.prefix} show <单号>：查看自己的审批单',
-			f'{self.prefix} list [页码]：列出自己的审批单',
-			f'{self.prefix} status：运行状态与活动审批',
-			f'{self.prefix} cancel <单号>：取消自己的待审批单',
-		)))
+		reply(source, RText('PrimeBackup 回档审批', RColor.gold))
+		reply(source, RTextList(command(f'{self.prefix} apply ', label=f'{self.prefix} apply <备份> <理由>'), RText('：申请回档', RColor.gray)))
+		reply(source, RTextList(command(f'{self.prefix} show ', label=f'{self.prefix} show <单号>'), RText('：查看自己的审批单', RColor.gray)))
+		reply(source, RTextList(command(f'{self.prefix} list', label=f'{self.prefix} list [页码]', run=True), RText('：列出自己的审批单', RColor.gray)))
+		reply(source, RTextList(command(f'{self.prefix} status', run=True), RText('：运行状态与活动审批', RColor.gray)))
+		reply(source, RTextList(command(f'{self.prefix} cancel ', label=f'{self.prefix} cancel <单号>'), RText('：取消自己的待审批单', RColor.gray)))
 
 	def apply(self, source: CommandSource, context: CommandContext) -> None:
 		assert isinstance(source, PlayerCommandSource)
@@ -55,6 +54,6 @@ class Commands:
 		self.runtime.submit(ListRequest(source, source.player, context.get('page', 1)))
 
 	def status(self, source: CommandSource) -> None:
-		source.reply(self.runtime.status_text())
+		reply(source, self.runtime.status_text())
 		if isinstance(source, PlayerCommandSource) and source.has_permission(self.runtime.config.approval.request_permission):
 			self.runtime.submit(StatusRequest(source, source.player))

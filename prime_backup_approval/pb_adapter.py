@@ -3,11 +3,12 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Protocol, cast
 
-from mcdreforged.api.all import AbstractNode, CommandContext, CommandSource, Literal, PlayerCommandSource, PluginServerInterface
+from mcdreforged.api.all import AbstractNode, CommandContext, CommandSource, Literal, PlayerCommandSource, PluginServerInterface, RColor, RText, RTextList
 from mcdreforged.command.builder.nodes.basic import RUNS_CALLBACK, _Requirement
 
 from prime_backup_approval.models import BackupDescription, BackupTarget
 from prime_backup_approval.requests import BackRequest
+from prime_backup_approval.text import command, reply
 
 
 class PermissionSettings(Protocol):
@@ -138,10 +139,13 @@ class PBAdapter:
 				callback(source, context)
 				return
 			if not isinstance(source, PlayerCommandSource) or not source.has_permission(self.request_permission):
-				source.reply('权限不足。')
+				reply(source, '权限不足。', RColor.red)
 				return
 			if any(context.get(key, 0) > 0 for key in ('confirm', 'fail_soft', 'no_verify')):
-				source.reply('审批批准适用于默认回档，请使用默认 back 命令。')
+				reply(source, RTextList(
+					RText('此审批适用的回档命令：', RColor.yellow),
+					command(f'{manager.config.command.prefix} back {context.get("backup_id", "latest")}'),
+				))
 				return
 			copied = context.copy()
 
