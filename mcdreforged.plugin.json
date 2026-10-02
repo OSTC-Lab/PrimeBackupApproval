@@ -1,0 +1,19 @@
+{
+    "id": "prime_backup_approval",
+    "version": "0.1.0",
+    "name": "PrimeBackupApproval",
+    "description": {
+        "en_us": "Approval-based access to PrimeBackup restores",
+        "zh_cn": "PrimeBackup 回档审批插件"
+    },
+    "author": ["OSTC-Lab"],
+    "license": "GPL-3.0-only",
+    "dependencies": {
+        "python": ">=3.11",
+        "mcdreforged": ">=2.16.0",
+        "prime_backup": ">=1.14.0"
+    },
+    "entrypoint": "prime_backup_approval.mcdr_entrypoint",
+    "archive_name": "PrimeBackupApproval-v{version}.mcdr",
+    "resources": ["LICENSE"]
+}

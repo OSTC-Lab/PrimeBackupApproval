@@ -226,3 +226,8 @@ __marimo__/
 
 # MCDR
 *.mcdr
+
+# Plugin development artifacts
+/package/
+/.venv311/
+/config.json
