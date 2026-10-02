@@ -69,10 +69,10 @@ PrimeBackupApproval 是 PrimeBackup 的 MCDR 附属插件，
 | `!!pba apply <备份> <理由>` | 申请回档，理由可直接包含空格             |
 | `!!pba show <单号>`         | 查看申请内容、审批结果、有效期和执行次数 |
 | `!!pba list [页码]`         | 按创建时间倒序列出申请，每页 10 条       |
-| `!!pba status`              | 查看运行状态、活动申请和可用批准         |
+| `!!pba status`              | 查看运行状态和有效审批                   |
 | `!!pba cancel <单号>`       | 取消待审批申请                           |
 
-取消成功后释放活动单据额度，记录继续保留供查询。
+取消成功后释放有效审批额度，记录继续保留供查询。
 已同意、拒绝或超时的申请保留原有结果。
 
 游戏内单号可点击查看详情，列表支持点击翻页。
@@ -93,7 +93,7 @@ PrimeBackupApproval 是 PrimeBackup 的 MCDR 附属插件，
 - **允许重复申请。** 相同目标再次申请时提示已有单号，并继续创建。
   多份批准分别计数，执行时优先使用截止时间最早的一份。
 
-每个玩家默认最多持有 **20 张活动单据**：审批窗口内的待审批单，
+每个玩家默认最多持有 **20 张有效审批单**：审批窗口内的待审批单，
 以及使用期内仍有剩余执行次数的批准。达到上限后，可等待申请结束或取消待审批单。
 
 ## 配置
@@ -113,7 +113,7 @@ PrimeBackupApproval 是 PrimeBackup 的 MCDR 附属插件，
 | `approval.decision_timeout_seconds`       | `1800`                  | 申请的审批窗口           |
 | `approval.grant_validity_seconds`         | `600`                   | 通过后的使用窗口         |
 | `approval.max_uses`                       | `10`                    | 每张批准的执行次数上限   |
-| `approval.max_active_per_player`          | `20`                    | 每个玩家的活动单据上限   |
+| `approval.max_active_per_player`          | `20`                    | 每个玩家的有效审批上限   |
 | `polling.interval_seconds`                | `1`                     | 待审批结果查询间隔       |
 | `polling.retry_interval_seconds`          | `10`                    | 中心访问失败后的重试间隔 |
 | `command.prefix`                          | `!!pba`                 | 附属插件命令前缀         |

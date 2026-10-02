@@ -9,7 +9,7 @@ from prime_backup_approval.approval_center_sdk import ApprovalCenterAPIError, Ap
 from prime_backup_approval.approval_manager import ApprovalManager, OperationError, ProcessingStopped
 from prime_backup_approval.config import Config
 from prime_backup_approval.diagnostics import FailureContext, failure_context, format_failure
-from prime_backup_approval.pb_adapter import PBAdapter
+from prime_backup_approval.pb_adapter import PBAdapter, PBTargetError
 from prime_backup_approval.requests import ApplyRequest, BackRequest, CancelRequest, NotifyRequest, PlayerRequest, ShowRequest, WorkRequest
 from prime_backup_approval.text import button, message, reply
 
@@ -47,7 +47,7 @@ class Runtime:
 			first_seen = self.player_seen(request.player)
 		if not self.config.enabled or self._stop.is_set() or not self.ready:
 			if isinstance(request, PlayerRequest):
-				reply(request.source, '审批扩展已停用或正在初始化／恢复，请稍后重试。', RColor.yellow)
+				reply(request.source, self.status_text())
 			return
 		if first_seen and isinstance(request, PlayerRequest):
 			self._jobs.put(NotifyRequest(request.player))
@@ -84,10 +84,13 @@ class Runtime:
 			return True
 
 	def status_text(self) -> RTextBase:
+		if not self.config.enabled or self._stop.is_set():
+			return RText('审批服务：已停用', RColor.gray)
 		if not self.config.approval_center.configured:
-			return RText('等待填写 client_id 和 client_secret，填写后重载插件。', RColor.yellow)
+			return RText('审批服务：等待配置，请填写 client_id 和 client_secret，填写后重载插件。', RColor.yellow)
+		state = '就绪' if self.ready else ('恢复中' if self._last_error is not None else '初始化中')
 		return RTextList(
-			'审批服务：', RText('就绪' if self.ready else '停用／恢复中', RColor.green if self.ready else RColor.yellow),
+			'审批服务：', RText(state, RColor.green if self.ready else RColor.yellow),
 			' · PB 连接：', RText('已就绪' if self.adapter.available else '等待就绪', RColor.green if self.adapter.available else RColor.yellow),
 		)
 
@@ -123,19 +126,22 @@ class Runtime:
 			self.manager.poll()
 
 	def _report_failure(self, request: WorkRequest, error: Exception) -> None:
+		feedback: str | None = None
+		if isinstance(error, (OperationError, PBTargetError)):
+			feedback = str(error)
+		elif isinstance(error, ApprovalCenterAPIError) and error.code == 'approval_not_found':
+			feedback = '审批单不存在。'
+		elif isinstance(error, httpx.RequestError):
+			creating = isinstance(request, ApplyRequest) and any(
+				note.startswith('phase=create.approval ') for note in getattr(error, '__notes__', ())
+			)
+			feedback = '申请提交结果待确认，请查询已有单据或重新按正常流程申请。' if creating else '暂时无法与审批中心通信，请稍后重试。'
 		if isinstance(request, PlayerRequest):
-			if isinstance(error, OperationError):
-				message = str(error)
-			elif isinstance(error, ApprovalCenterAPIError):
-				message = f'审批中心返回错误：{error.code}。请使用 show 或 list 查询当前结果。'
-			elif isinstance(error, httpx.RequestError) and isinstance(request, ApplyRequest):
-				message = '申请提交结果待确认，请查询已有单据或重新按正常流程申请。'
-			else:
-				message = '本次处理失败，请查询当前单据并稍后重试；详细信息已写入日志。'
-			reply(request.source, RTextList(
-				RText(message, RColor.red), ' ', button('查看单据', f'{self.config.command.prefix} list', run=True),
-			))
-		if not isinstance(error, OperationError):
+			if feedback is not None:
+				reply(request.source, RTextList(
+					RText(feedback, RColor.red), ' ', button('查看单据', f'{self.config.command.prefix} list', run=True),
+				))
+		if not isinstance(error, (OperationError, PBTargetError)):
 			self._log_error(error, FailureContext(
 				phase=type(request).__name__, player=request.player,
 				approval_id=request.approval_id if isinstance(request, (ShowRequest, CancelRequest)) else None,
@@ -171,12 +177,12 @@ class Runtime:
 					break
 				if not self.ready:
 					if isinstance(request, PlayerRequest):
-							reply(request.source, '审批扩展正在恢复，请稍后重试。', RColor.yellow)
+						reply(request.source, self.status_text())
 					continue
 				try:
 					if isinstance(request, PlayerRequest):
 						if not request.source.has_permission(self.config.approval.request_permission):
-							raise OperationError('当前权限低于申请权限要求。')
+							raise OperationError('权限不足。')
 					self.manager.handle(request)
 				except ProcessingStopped:
 					break

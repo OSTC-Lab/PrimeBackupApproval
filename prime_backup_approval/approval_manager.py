@@ -108,9 +108,12 @@ class ApprovalManager:
 	def _owned(self, player: str, approval_id: int) -> ManagedApproval:
 		self._check_running()
 		with failure_context(FailureContext('get.approval', player=player, approval_id=approval_id, method='GET', path=f'/api/v1/approval/{approval_id}')):
-			record = self._decode(self.client.get_approval(GetApprovalRequest(approval_id=approval_id)))
-		if record is None or record.data.player_name != player:
-			raise OperationError('该单据属于其他玩家或数据格式无法识别。')
+			approval = self.client.get_approval(GetApprovalRequest(approval_id=approval_id))
+			if approval.client_id != self.config.approval_center.client_id or approval.reference_key != reference_key(player):
+				raise OperationError('权限不足。')
+			record = self._decode(approval)
+			if record is None:
+				raise ValueError('Invalid restore approval data')
 		return record
 
 	def _track(self, record: ManagedApproval) -> None:
@@ -239,11 +242,11 @@ class ApprovalManager:
 				reply(request.source, navigation)
 		elif isinstance(request, StatusRequest):
 			records = [record for record in self._list(request.player) if record.is_active(int(self.clock()))]
-			reply(request.source, RText(f'活动单据 {len(records)}/{self.config.approval.max_active_per_player}', RColor.gold))
+			reply(request.source, RText(f'有效审批 {len(records)}/{self.config.approval.max_active_per_player}', RColor.gold))
 			for record in records:
 				reply(request.source, self.describe(record))
 			if not records:
-				reply(request.source, '当前暂无活动单据。', RColor.gray)
+				reply(request.source, '当前暂无有效审批。', RColor.gray)
 		else:
 			raise TypeError('Unknown work request')
 
@@ -257,27 +260,32 @@ class ApprovalManager:
 			self._track(record)
 		active = [record for record in records if record.is_active(int(self.clock()))]
 		if len(active) >= self.config.approval.max_active_per_player:
-			raise OperationError(f'活动单据已达到 {self.config.approval.max_active_per_player} 单，请等待结束或取消待审批单。')
+			raise OperationError(f'有效审批已达到 {self.config.approval.max_active_per_player} 单，请等待审批结束或取消待审批单。')
 		duplicates = [record.approval.approval_id for record in active if record.data.backup == backup.target]
 		if duplicates:
 			links = RTextList()
 			for approval_id in duplicates:
 				links.append(approval_link(approval_id, self.config.command.prefix), ' ')
-			reply(request.source, RTextList(RText('该目标已有活动申请：', RColor.yellow), links, '继续创建本次申请。'))
+			reply(request.source, RTextList(RText('注意：已存在回档至该备份的有效审批 ', RColor.yellow), links))
 		data = RestoreApprovalData(
 			player_name=request.player, backup=backup.target,
 			grant=GrantPolicy(validity_seconds=self.config.approval.grant_validity_seconds, max_uses=self.config.approval.max_uses),
 		)
 		with failure_context(FailureContext('create.content', player=request.player, backup=str(backup.target.backup_id))):
-			content = ApprovalContent(title='PrimeBackup 回档申请', description=request.reason, fields=(
-				DisplayField(name='玩家', value=request.player, inline=True),
-				DisplayField(name='服务器', value=self.config.server_name, inline=True),
-				DisplayField(name='操作', value='prime_backup / back'),
-				DisplayField(name='目标备份', value=' · '.join(
-					' '.join(part.split()) for part in (f'#{backup.target.backup_id}', backup.date, backup.comment) if part.strip()
-				)),
-				DisplayField(name='批准使用规则', value=f'决定后 {duration_text(data.grant.validity_seconds)}内；执行次数上限：{data.grant.max_uses} 次'),
-			))
+			try:
+				content = ApprovalContent(title='PrimeBackup 回档申请', description=request.reason, fields=(
+					DisplayField(name='玩家', value=request.player, inline=True),
+					DisplayField(name='服务器', value=self.config.server_name, inline=True),
+					DisplayField(name='操作', value='prime_backup / back'),
+					DisplayField(name='目标备份', value=' · '.join(
+						' '.join(part.split()) for part in (f'#{backup.target.backup_id}', backup.date, backup.comment) if part.strip()
+					)),
+					DisplayField(name='批准使用规则', value=f'决定后 {duration_text(data.grant.validity_seconds)}内；执行次数上限：{data.grant.max_uses} 次'),
+				))
+			except ValidationError as error:
+				if all(item['type'] in ('string_too_long', 'value_error') for item in error.errors(include_input=False)):
+					raise OperationError('申请内容过长，请缩短申请理由或备份备注。') from None
+				raise
 		self._check_running()
 		with failure_context(FailureContext('create.approval', player=request.player, backup=str(backup.target.backup_id), method='POST', path='/api/v1/approval')):
 			result = self.client.create_approval(CreateApprovalRequest(
@@ -312,7 +320,7 @@ class ApprovalManager:
 		candidates = [record for record in records if record.data.backup == backup.target and record.approval.status == ApprovalStatus.APPROVED and record.is_active(int(self.clock()))]
 		if not candidates:
 			reply(request.source, RTextList(
-				'目标备份 ', RText(f'#{backup.target.backup_id}', RColor.gold), RText(' 当前需要审批。', RColor.yellow),
+				'回档至备份 ', RText(f'#{backup.target.backup_id}', RColor.gold), RText(' 需要审批。', RColor.yellow),
 			))
 			reply(request.source, RTextList('申请命令：', command(
 				f'{self.config.command.prefix} apply {backup.target.backup_id} ',
@@ -337,8 +345,8 @@ class ApprovalManager:
 		with failure_context(FailureContext('pb.execute', player=request.player, approval_id=record.approval.approval_id, backup=str(record.data.backup.backup_id))):
 			request.execute(record.data.backup.backup_id)
 		feedback = RTextList(
-			'审批单 ', approval_link(record.approval.approval_id, self.config.command.prefix),
-			RText(' 已用于本次回档放行。', RColor.green),
+			RText('已通过审批单 ', RColor.green), approval_link(record.approval.approval_id, self.config.command.prefix),
+			RText(' 放行本次回档操作。', RColor.green),
 		)
 		if record.remaining_uses <= 3:
 			feedback.append(RText(f' 剩余执行次数：{record.remaining_uses} 次。', RColor.gold))
@@ -360,7 +368,7 @@ class ApprovalManager:
 			return
 		cancelled = self._decode(result)
 		if cancelled is None:
-			raise OperationError('中心返回的单据格式无法识别。')
+			raise ValueError(f'Invalid cancelled approval response approval_id={request.approval_id}')
 		record = cancelled
 		self._track(record)
 		reply(request.source, self.describe(record))

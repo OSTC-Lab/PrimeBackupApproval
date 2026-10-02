@@ -18,7 +18,7 @@ class Commands:
 			return isinstance(source, PlayerCommandSource) and source.has_permission(self.runtime.config.approval.request_permission)
 
 		def player_command(name: str) -> Literal:
-			return Literal(name).requires(permitted, lambda: message('该命令供具有申请资格的玩家使用。', RColor.red))
+			return Literal(name).requires(permitted, lambda: message('权限不足。', RColor.red))
 
 		root.then(player_command('apply').then(Text('backup').then(GreedyText('reason').runs(self.apply))))
 		root.then(player_command('show').then(Integer('approval_id').at_min(1).runs(self.show)))
@@ -34,7 +34,7 @@ class Commands:
 		reply(source, RTextList(command(f'{self.prefix} apply ', label=f'{self.prefix} apply <备份> <理由>'), RText('：申请回档', RColor.gray)))
 		reply(source, RTextList(command(f'{self.prefix} show ', label=f'{self.prefix} show <单号>'), RText('：查看自己的审批单', RColor.gray)))
 		reply(source, RTextList(command(f'{self.prefix} list', label=f'{self.prefix} list [页码]', run=True), RText('：列出自己的审批单', RColor.gray)))
-		reply(source, RTextList(command(f'{self.prefix} status', run=True), RText('：运行状态与活动审批', RColor.gray)))
+		reply(source, RTextList(command(f'{self.prefix} status', run=True), RText('：运行状态与有效审批', RColor.gray)))
 		reply(source, RTextList(command(f'{self.prefix} cancel ', label=f'{self.prefix} cancel <单号>'), RText('：取消自己的待审批单', RColor.gray)))
 
 	def apply(self, source: CommandSource, context: CommandContext) -> None:

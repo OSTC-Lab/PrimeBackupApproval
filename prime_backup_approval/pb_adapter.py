@@ -3,12 +3,12 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Protocol, cast
 
-from mcdreforged.api.all import AbstractNode, CommandContext, CommandSource, Literal, PlayerCommandSource, PluginServerInterface, RColor, RText, RTextList
+from mcdreforged.api.all import AbstractNode, CommandContext, CommandSource, Literal, PlayerCommandSource, PluginServerInterface, RColor
 from mcdreforged.command.builder.nodes.basic import RUNS_CALLBACK, _Requirement
 
 from prime_backup_approval.models import BackupDescription, BackupTarget
 from prime_backup_approval.requests import BackRequest
-from prime_backup_approval.text import command, reply
+from prime_backup_approval.text import reply
 
 
 class PermissionSettings(Protocol):
@@ -53,6 +53,11 @@ class HookInstallation:
 
 
 class PBAdapterError(Exception):
+	pass
+
+
+class PBTargetError(PBAdapterError):
+	"""A normal user-facing failure while selecting a backup or checking permission."""
 	pass
 
 
@@ -118,10 +123,16 @@ class PBAdapter:
 				raise PBAdapterError('PB back callback is incompatible')
 			patches.append(CallbackPatch(node, original, self._make_wrapper(manager, original, level)))
 
-		def check_permission(source: CommandSource) -> bool:
-			return bool(checker(source)) or (
-				isinstance(source, PlayerCommandSource) and source.has_permission(self.request_permission)
-			)
+		def check_permission(source: CommandSource, context: CommandContext) -> bool:
+			if checker(source):
+				return True
+			if not isinstance(source, PlayerCommandSource) or not source.has_permission(self.request_permission):
+				return False
+			if any(option in context.command_remaining.split() for option in ('--confirm', '--fail-soft', '--no-verify')):
+				reply(source, '注意：只有默认回档命令才可申请审批。', RColor.yellow)
+				# The original PB failure callback supplies the native permission error.
+				return False
+			return True
 
 		replacement = _Requirement(check_permission, requirement.failure_message_getter)
 		# Both execution callbacks are guarded before the entry permission is widened.
@@ -139,13 +150,10 @@ class PBAdapter:
 				callback(source, context)
 				return
 			if not isinstance(source, PlayerCommandSource) or not source.has_permission(self.request_permission):
-				reply(source, '权限不足。', RColor.red)
+				self.server.execute_command(context.command, source)
 				return
 			if any(context.get(key, 0) > 0 for key in ('confirm', 'fail_soft', 'no_verify')):
-				reply(source, RTextList(
-					RText('此审批适用的回档命令：', RColor.yellow),
-					command(f'{manager.config.command.prefix} back {context.get("backup_id", "latest")}'),
-				))
+				self.server.execute_command(context.command, source)
 				return
 			copied = context.copy()
 
@@ -157,7 +165,7 @@ class PBAdapter:
 					if entry is None or entry.init_ok is not True or entry.command_manager is not manager:
 						raise PBAdapterError('PB is no longer ready')
 					if not source.has_permission(self.request_permission):
-						raise PBAdapterError('Player permission changed before execution')
+						raise PBTargetError('权限不足。')
 					copied['backup_id'] = str(backup_id)
 					callback(source, copied)
 
@@ -190,14 +198,24 @@ class PBAdapter:
 		from prime_backup.action.list_backup_action import ListBackupAction
 		from prime_backup.types.backup_filter import BackupFilter
 		from prime_backup.utils.backup_id_parser import BackupIdParser
+		from prime_backup.exceptions import BackupNotFound
 
 		if raw is None:
 			backups = ListBackupAction(backup_filter=BackupFilter().requires_non_temporary_backup(), limit=1).run()
 			if not backups:
-				raise PBAdapterError('PB has no available backup')
+				raise PBTargetError('没有可用的备份。')
 			backup = backups[0]
 		else:
-			backup = GetBackupAction(BackupIdParser(allow_db_access=True).parse(raw)).run()
+			try:
+				backup_id = BackupIdParser(allow_db_access=True).parse(raw)
+			except BackupIdParser.OffsetBackupNotFound:
+				raise PBTargetError('没有找到匹配的备份。') from None
+			except ValueError:
+				raise PBTargetError('备份参数无效，请使用备份编号、latest 或 ~N。') from None
+			try:
+				backup = GetBackupAction(backup_id).run()
+			except BackupNotFound:
+				raise PBTargetError(f'备份 #{backup_id} 不存在。') from None
 		return BackupDescription(
 			BackupTarget(backup_id=backup.id, fileset_id_base=backup.fileset_id_base, fileset_id_delta=backup.fileset_id_delta),
 			backup.date_str, backup.comment,
