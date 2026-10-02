@@ -196,6 +196,7 @@ class PBAdapter:
 			raise PBAdapterError('PB is initializing or disabled')
 		from prime_backup.action.get_backup_action import GetBackupAction
 		from prime_backup.action.list_backup_action import ListBackupAction
+		from prime_backup.mcdr.text_components import TextComponents
 		from prime_backup.types.backup_filter import BackupFilter
 		from prime_backup.utils.backup_id_parser import BackupIdParser
 		from prime_backup.exceptions import BackupNotFound
@@ -218,7 +219,7 @@ class PBAdapter:
 				raise PBTargetError(f'备份 #{backup_id} 不存在。') from None
 		return BackupDescription(
 			BackupTarget(backup_id=backup.id, fileset_id_base=backup.fileset_id_base, fileset_id_delta=backup.fileset_id_delta),
-			backup.date_str, backup.comment,
+			backup.date_str, TextComponents.backup_comment(backup.comment).to_plain_text(),
 		)
 
 	def online_players(self) -> set[str]:
