@@ -6,10 +6,11 @@ import httpx
 from mcdreforged.api.all import PluginServerInterface, RColor, RText, RTextBase, RTextList
 
 from prime_backup_approval.approval_center_sdk import ApprovalCenterAPIError, ApprovalCenterClient
-from prime_backup_approval.approval_manager import ApprovalManager, OperationError, ProcessingStopped
+from prime_backup_approval.approval_manager import ApprovalManager
 from prime_backup_approval.config import Config
 from prime_backup_approval.diagnostics import FailureContext, failure_context, format_failure
-from prime_backup_approval.pb_adapter import PBAdapter, PBTargetError
+from prime_backup_approval.errors import OperationError, ProcessingStopped, WriteOutcomeUncertain
+from prime_backup_approval.pb_adapter import PBAdapter
 from prime_backup_approval.requests import ApplyRequest, BackRequest, CancelRequest, NotifyRequest, PlayerRequest, ShowRequest, WorkRequest
 from prime_backup_approval.text import button, message, reply
 
@@ -126,32 +127,35 @@ class Runtime:
 			self.manager.poll()
 
 	def _report_failure(self, request: WorkRequest, error: Exception) -> None:
+		cause = error.error if isinstance(error, WriteOutcomeUncertain) else error
 		feedback: str | None = None
-		if isinstance(error, (OperationError, PBTargetError)):
+		if isinstance(error, OperationError):
 			feedback = str(error)
 		elif isinstance(error, ApprovalCenterAPIError) and error.code == 'approval_not_found':
 			feedback = '审批单不存在。'
-		elif isinstance(error, httpx.RequestError):
-			creating = isinstance(request, ApplyRequest) and any(
-				note.startswith('phase=create.approval ') for note in getattr(error, '__notes__', ())
-			)
+		elif isinstance(cause, httpx.RequestError):
+			creating = isinstance(error, WriteOutcomeUncertain) and error.operation == 'create'
 			feedback = '申请提交结果待确认，请查询已有单据或重新按正常流程申请。' if creating else '暂时无法与审批中心通信，请稍后重试。'
-		if isinstance(request, PlayerRequest):
-			if feedback is not None:
-				reply(request.source, RTextList(
-					RText(feedback, RColor.red), ' ', button('查看单据', f'{self.config.command.prefix} list', run=True),
-				))
-		if not isinstance(error, (OperationError, PBTargetError)):
+		if not isinstance(error, OperationError):
 			self._log_error(error, FailureContext(
 				phase=type(request).__name__, player=request.player,
 				approval_id=request.approval_id if isinstance(request, (ShowRequest, CancelRequest)) else None,
 				backup=request.backup_raw if isinstance(request, (ApplyRequest, BackRequest)) else None,
 			))
-		if isinstance(error, httpx.HTTPError) and not (
-			isinstance(error, ApprovalCenterAPIError) and error.status_code in (404, 409, 422)
+		if isinstance(error, WriteOutcomeUncertain) or (
+			isinstance(error, httpx.HTTPError) and not (
+				isinstance(error, ApprovalCenterAPIError) and error.status_code in (404, 409, 422)
+			)
 		):
 			self.ready = False
 			self._next_recovery = time.monotonic() + self.config.polling.retry_interval_seconds
+		if isinstance(request, PlayerRequest) and feedback is not None:
+			try:
+				reply(request.source, RTextList(
+					RText(feedback, RColor.red), ' ', button('查看单据', f'{self.config.command.prefix} list', run=True),
+				))
+			except Exception as reply_error:
+				self._log_error(reply_error, FailureContext('reply.failure', player=request.player))
 
 	def _run(self) -> None:
 		try:
@@ -175,11 +179,11 @@ class Runtime:
 					continue
 				if request is None or self._stop.is_set():
 					break
-				if not self.ready:
-					if isinstance(request, PlayerRequest):
-						reply(request.source, self.status_text())
-					continue
 				try:
+					if not self.ready:
+						if isinstance(request, PlayerRequest):
+							reply(request.source, self.status_text())
+						continue
 					if isinstance(request, PlayerRequest):
 						if not request.source.has_permission(self.config.approval.request_permission):
 							raise OperationError('权限不足。')
@@ -200,6 +204,8 @@ class Runtime:
 		self._jobs.put(None)
 		if self.thread.is_alive():
 			self.thread.join()
-		self.adapter.close()
-		self.client.close()
+		try:
+			self.adapter.close()
+		finally:
+			self.client.close()
 		self.server.logger.info('PrimeBackupApproval stopped')

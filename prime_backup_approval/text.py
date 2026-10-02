@@ -1,6 +1,17 @@
+import re
 from datetime import datetime
 
 from mcdreforged.api.all import CommandSource, RAction, RColor, RText, RTextBase, RTextList
+
+_MARKDOWN_CHARACTERS = '\\`*_~|[]()<>#+-'
+
+
+def escape_markdown(text: str) -> str:
+	return ''.join('\\' + char if char in _MARKDOWN_CHARACTERS else char for char in text)
+
+
+def unescape_markdown(text: str) -> str:
+	return re.sub(r'\\([' + re.escape(_MARKDOWN_CHARACTERS) + r'])', r'\1', text)
 
 
 def message(text: str | RTextBase, color: RColor = RColor.white) -> RTextBase:

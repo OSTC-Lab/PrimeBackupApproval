@@ -21,8 +21,8 @@ class Commands:
 			return Literal(name).requires(permitted, lambda: message('权限不足。', RColor.red))
 
 		root.then(player_command('apply').then(Text('backup').then(GreedyText('reason').runs(self.apply))))
-		root.then(player_command('show').then(Integer('approval_id').at_min(1).runs(self.show)))
-		root.then(player_command('cancel').then(Integer('approval_id').at_min(1).runs(self.cancel)))
+		root.then(player_command('show').then(Integer('approval_id').at_min(1).at_max(2 ** 63 - 1).runs(self.show)))
+		root.then(player_command('cancel').then(Integer('approval_id').at_min(1).at_max(2 ** 63 - 1).runs(self.cancel)))
 		listing = player_command('list').runs(self.list)
 		listing.then(Integer('page').at_min(1).runs(self.list))
 		root.then(listing)

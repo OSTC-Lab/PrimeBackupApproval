@@ -3,6 +3,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Protocol, cast
 
+import httpx
 from mcdreforged.api.all import RColor, RText, RTextBase, RTextList
 from pydantic import ValidationError
 
@@ -12,13 +13,14 @@ from prime_backup_approval.approval_center_sdk import (
 )
 from prime_backup_approval.config import Config
 from prime_backup_approval.diagnostics import FailureContext, failure_context, format_failure
+from prime_backup_approval.errors import OperationError, ProcessingStopped, WriteOutcomeUncertain
 from prime_backup_approval.models import (
 	BackupDescription, GrantPolicy, ManagedApproval, ProcessingState, RestoreApprovalData, TerminalStatus, reference_key,
 )
 from prime_backup_approval.requests import (
 	ApplyRequest, BackRequest, CancelRequest, ListRequest, NotifyRequest, ShowRequest, StatusRequest, WorkRequest,
 )
-from prime_backup_approval.text import approval_link, button, command, duration_text, reply, time_text
+from prime_backup_approval.text import approval_link, button, command, duration_text, escape_markdown, reply, time_text, unescape_markdown
 
 STATUS_TEXT = {
 	ApprovalStatus.PENDING: '待审批', ApprovalStatus.APPROVED: '已同意',
@@ -34,14 +36,6 @@ class BackupProvider(Protocol):
 	@property
 	def prefix(self) -> str: ...
 	def resolve(self, raw: str | None) -> BackupDescription: ...
-
-
-class OperationError(Exception):
-	pass
-
-
-class ProcessingStopped(Exception):
-	pass
 
 
 @dataclass(frozen=True)
@@ -74,18 +68,12 @@ class ApprovalManager:
 	def _decode(self, approval: ApprovalInfo) -> ManagedApproval | None:
 		if approval.client_id != self.config.approval_center.client_id or not (approval.reference_key or '').startswith('pb.restore:'):
 			return None
-		try:
+		with failure_context(FailureContext('decode.approval_data', approval_id=approval.approval_id)):
 			data = RestoreApprovalData.model_validate_json(approval.data)
 			if approval.reference_key != reference_key(data.player_name):
 				raise ValueError('Player reference mismatch')
 			if approval.status == ApprovalStatus.APPROVED and approval.decision is None:
 				raise ValueError('Missing decision')
-		except (ValidationError, ValueError) as error:
-			self.logger.warning(format_failure(
-				error, FailureContext('decode.approval_data', approval_id=approval.approval_id),
-				secret=self.config.approval_center.client_secret.get_secret_value(),
-			))
-			return None
 		return ManagedApproval(approval, data)
 
 	def _list(self, player: str | None = None) -> list[ManagedApproval]:
@@ -98,7 +86,14 @@ class ApprovalManager:
 					reference_key=None if player is None else reference_key(player), limit=100, offset=offset,
 				))
 			for approval in page.items:
-				record = self._decode(approval)
+				try:
+					record = self._decode(approval)
+				except (ValidationError, ValueError) as error:
+					self.logger.warning(format_failure(
+						error, FailureContext('list.approvals', approval_id=approval.approval_id),
+						secret=self.config.approval_center.client_secret.get_secret_value(),
+					))
+					continue
 				if record is not None and (player is None or record.data.player_name == player):
 					items.append(record)
 			if len(page.items) < page.limit:
@@ -108,7 +103,13 @@ class ApprovalManager:
 	def _owned(self, player: str, approval_id: int) -> ManagedApproval:
 		self._check_running()
 		with failure_context(FailureContext('get.approval', player=player, approval_id=approval_id, method='GET', path=f'/api/v1/approval/{approval_id}')):
-			approval = self.client.get_approval(GetApprovalRequest(approval_id=approval_id))
+			try:
+				approval = self.client.get_approval(GetApprovalRequest(approval_id=approval_id))
+			except ApprovalCenterAPIError as error:
+				if error.code == 'approval_not_found':
+					if self.tracked.pop(approval_id, None) is not None:
+						self.logger.info(f'Approval removed approval_id={approval_id}')
+				raise
 			if approval.client_id != self.config.approval_center.client_id or approval.reference_key != reference_key(player):
 				raise OperationError('权限不足。')
 			record = self._decode(approval)
@@ -137,7 +138,15 @@ class ApprovalManager:
 			data = RestoreApprovalData.model_validate_json(data.model_dump_json())
 			payload = data.model_dump_json().encode('utf8')
 			with failure_context(FailureContext('put.approval_data', method='PUT', path=f'/api/v1/approval-data/{record.approval.approval_id}')):
-				result = self.client.set_approval_data(SetApprovalDataRequest(approval_id=record.approval.approval_id, data=payload))
+				request = SetApprovalDataRequest(approval_id=record.approval.approval_id, data=payload)
+				try:
+					result = self.client.set_approval_data(request)
+				except (httpx.RequestError, ValidationError) as error:
+					self.tracked.pop(record.approval.approval_id, None)
+					raise WriteOutcomeUncertain('data', error) from error
+				except httpx.HTTPStatusError:
+					self.tracked.pop(record.approval.approval_id, None)
+					raise
 		updated = ManagedApproval(record.approval.model_copy(update={
 			'data': payload, 'data_version': result.version, 'updated_at': result.updated_at,
 		}), data)
@@ -186,8 +195,6 @@ class ApprovalManager:
 				record = self._owned(tracked.record.data.player_name, approval_id)
 			except ApprovalCenterAPIError as error:
 				if error.code == 'approval_not_found':
-					self.tracked.pop(approval_id, None)
-					self.logger.info(f'Approval removed approval_id={approval_id}')
 					continue
 				raise
 			self._track(record)
@@ -200,7 +207,12 @@ class ApprovalManager:
 		if isinstance(request, NotifyRequest):
 			for tracked in list(self.tracked.values()):
 				if tracked.record.data.player_name == request.player:
-					record = self._owned(request.player, tracked.record.approval.approval_id)
+					try:
+						record = self._owned(request.player, tracked.record.approval.approval_id)
+					except ApprovalCenterAPIError as error:
+						if error.code == 'approval_not_found':
+							continue
+						raise
 					self._track(record)
 					self._notify_result(record)
 			return
@@ -212,7 +224,7 @@ class ApprovalManager:
 			record = self._owned(request.player, request.approval_id)
 			self._track(record)
 			reply(request.source, self.describe(record, details=True))
-			reply(request.source, RTextList(RText('申请理由：', RColor.gray), record.approval.content.description))
+			reply(request.source, RTextList(RText('申请理由：', RColor.gray), unescape_markdown(record.approval.content.description)))
 			if record.approval.decision is not None:
 				decision = record.approval.decision
 				reply(request.source, RTextList(
@@ -220,8 +232,7 @@ class ApprovalManager:
 					RText(' · 审批人：', RColor.gray), decision.reviewer_name or '系统',
 				))
 			for field in record.approval.content.fields:
-				value = ' · '.join(line.strip() for line in field.value.splitlines() if line.strip()) if field.name == '目标备份' else field.value
-				reply(request.source, RTextList(RText(f'{field.name}：', RColor.gray), value))
+				reply(request.source, RTextList(RText(f'{field.name}：', RColor.gray), unescape_markdown(field.value)))
 		elif isinstance(request, CancelRequest):
 			self._cancel(request)
 		elif isinstance(request, ListRequest):
@@ -273,25 +284,27 @@ class ApprovalManager:
 		)
 		with failure_context(FailureContext('create.content', player=request.player, backup=str(backup.target.backup_id))):
 			try:
-				content = ApprovalContent(title='PrimeBackup 回档申请', description=request.reason, fields=(
-					DisplayField(name='玩家', value=request.player, inline=True),
-					DisplayField(name='服务器', value=self.config.server_name, inline=True),
-					DisplayField(name='操作', value='prime_backup / back'),
-					DisplayField(name='目标备份', value=' · '.join(
+				content = ApprovalContent(title='PrimeBackup 回档申请', description=escape_markdown(request.reason), fields=(
+					DisplayField(name='玩家', value=escape_markdown(request.player), inline=True),
+					DisplayField(name='服务器', value=escape_markdown(self.config.server_name), inline=True),
+					DisplayField(name='操作', value=escape_markdown('prime_backup / back')),
+					DisplayField(name='目标备份', value=escape_markdown(' · '.join(
 						' '.join(part.split()) for part in (f'#{backup.target.backup_id}', backup.date, backup.comment) if part.strip()
-					)),
-					DisplayField(name='批准使用规则', value=f'决定后 {duration_text(data.grant.validity_seconds)}内；执行次数上限：{data.grant.max_uses} 次'),
+					))),
+					DisplayField(name='批准使用规则', value=escape_markdown(f'决定后 {duration_text(data.grant.validity_seconds)}内；执行次数上限：{data.grant.max_uses} 次')),
 				))
-			except ValidationError as error:
-				if all(item['type'] in ('string_too_long', 'value_error') for item in error.errors(include_input=False)):
-					raise OperationError('申请内容过长，请缩短申请理由或备份备注。') from None
-				raise
+			except ValidationError:
+				raise OperationError('申请内容不符合展示要求，请调整申请理由或备份备注。') from None
 		self._check_running()
 		with failure_context(FailureContext('create.approval', player=request.player, backup=str(backup.target.backup_id), method='POST', path='/api/v1/approval')):
-			result = self.client.create_approval(CreateApprovalRequest(
+			create_request = CreateApprovalRequest(
 				content=content, expires_at=int(self.clock()) + self.config.approval.decision_timeout_seconds,
 				reference_key=reference_key(request.player), data=data.model_dump_json().encode('utf8'),
-			))
+			)
+			try:
+				result = self.client.create_approval(create_request)
+			except (httpx.RequestError, ValidationError) as error:
+				raise WriteOutcomeUncertain('create', error) from error
 		approval = ApprovalInfo(
 			**result.model_dump(), client_id=self.config.approval_center.client_id, content=content,
 			decision=None, data=data.model_dump_json().encode('utf8'), data_version=0,
@@ -358,7 +371,12 @@ class ApprovalManager:
 		self._check_running()
 		try:
 			with failure_context(FailureContext('cancel.approval', player=request.player, approval_id=request.approval_id, method='POST', path=f'/api/v1/approval/{request.approval_id}/cancel')):
-				result = self.client.cancel_approval(CancelApprovalRequest(approval_id=request.approval_id))
+				cancel_request = CancelApprovalRequest(approval_id=request.approval_id)
+				try:
+					result = self.client.cancel_approval(cancel_request)
+				except (httpx.RequestError, ValidationError) as error:
+					self.tracked.pop(request.approval_id, None)
+					raise WriteOutcomeUncertain('cancel', error) from error
 		except ApprovalCenterAPIError as error:
 			if error.code != 'approval_not_pending':
 				raise

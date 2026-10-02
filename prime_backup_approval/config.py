@@ -30,8 +30,9 @@ class CenterConfig(ConfigModel):
 	def validate_connection(self) -> Self:
 		from urllib.parse import urlsplit
 		url = urlsplit(self.base_url)
-		if url.scheme not in ('http', 'https') or not url.netloc or url.username or url.password or url.query or url.fragment:
+		if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password or url.query or url.fragment:
 			raise ValueError('base_url must be an HTTP(S) URL without credentials, query or fragment')
+		_ = url.port  # Reading the port validates its syntax and range.
 		return self
 
 

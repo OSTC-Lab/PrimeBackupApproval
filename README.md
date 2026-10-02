@@ -39,7 +39,7 @@ PrimeBackupApproval 是 PrimeBackup 的 MCDR 附属插件，
 | 组件           | 版本要求                            |
 |----------------|-------------------------------------|
 | Python         | ≥ 3.11                              |
-| MCDReforged    | ≥ 2.16                              |
+| MCDReforged    | ≥ 2.15                              |
 | PrimeBackup    | ≥ 1.14                              |
 
 1. 部署 ApprovalCenter，为当前 Minecraft 服务器配置独立的普通 client。

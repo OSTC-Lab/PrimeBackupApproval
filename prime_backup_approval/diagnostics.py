@@ -48,30 +48,35 @@ def failure_context(context: FailureContext) -> Iterator[None]:
 
 def format_failure(error: Exception, context: FailureContext, *, secret: str = '') -> str:
 	lines = [f'Approval processing failed: {context.describe()}']
-	lines.extend(getattr(error, '__notes__', ()))
-	lines.append(f'{type(error).__name__}:')
-	if isinstance(error, ValidationError):
-		lines.append(f'  model={error.title}')
-		for item in error.errors(include_input=False, include_context=False, include_url=False):
-			location = '.'.join(str(part) for part in item['loc']) or '<model>'
-			lines.append(f"  field={location} type={item['type']} message={item['msg']}")
-	elif isinstance(error, ApprovalCenterAPIError):
-		lines.append(f'  status={error.status_code} code={error.code} message={error.message}')
-	elif isinstance(error, httpx.HTTPStatusError):
-		lines.append(f'  status={error.response.status_code}')
-	else:
-		lines.append(f'  {error}')
-	if isinstance(error, httpx.HTTPError):
-		try:
-			request = error.request
-		except RuntimeError:
-			pass
+	current: BaseException | None = error
+	while current is not None:
+		lines.extend(getattr(current, '__notes__', ()))
+		lines.append(f'{type(current).__name__}:')
+		if isinstance(current, ValidationError):
+			lines.append(f'  model={current.title}')
+			for item in current.errors(include_input=False, include_context=False, include_url=False):
+				location = '.'.join(str(part) for part in item['loc']) or '<model>'
+				lines.append(f"  field={location} type={item['type']} message={item['msg']}")
+		elif isinstance(current, ApprovalCenterAPIError):
+			lines.append(f'  status={current.status_code} code={current.code} message={current.message}')
+		elif isinstance(current, httpx.HTTPStatusError):
+			lines.append(f'  status={current.response.status_code}')
 		else:
-			lines.append(f'  method={request.method} path={request.url.path}')
-	lines.append('Traceback (most recent call last):')
-	for frame in traceback.extract_tb(error.__traceback__):
-		# File, line and function identify the failure without logging locals or payloads.
-		lines.append(f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}')
+			lines.append(f'  {current}')
+		if isinstance(current, httpx.HTTPError):
+			try:
+				request = current.request
+			except RuntimeError:
+				pass
+			else:
+				lines.append(f'  method={request.method} path={request.url.path}')
+		lines.append('Traceback (most recent call last):')
+		for frame in traceback.extract_tb(current.__traceback__):
+			# File, line and function identify the failure without logging locals or payloads.
+			lines.append(f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}')
+		current = current.__cause__
+		if current is not None:
+			lines.append('Caused by:')
 	text = '\n'.join(lines)
 	if secret:
 		text = text.replace(secret, '<redacted>')

@@ -6,6 +6,7 @@ from typing import Callable, Protocol, cast
 from mcdreforged.api.all import AbstractNode, CommandContext, CommandSource, Literal, PlayerCommandSource, PluginServerInterface, RColor
 from mcdreforged.command.builder.nodes.basic import RUNS_CALLBACK, _Requirement
 
+from prime_backup_approval.errors import OperationError
 from prime_backup_approval.models import BackupDescription, BackupTarget
 from prime_backup_approval.requests import BackRequest
 from prime_backup_approval.text import reply
@@ -53,11 +54,6 @@ class HookInstallation:
 
 
 class PBAdapterError(Exception):
-	pass
-
-
-class PBTargetError(PBAdapterError):
-	"""A normal user-facing failure while selecting a backup or checking permission."""
 	pass
 
 
@@ -165,7 +161,7 @@ class PBAdapter:
 					if entry is None or entry.init_ok is not True or entry.command_manager is not manager:
 						raise PBAdapterError('PB is no longer ready')
 					if not source.has_permission(self.request_permission):
-						raise PBTargetError('权限不足。')
+						raise OperationError('权限不足。')
 					copied['backup_id'] = str(backup_id)
 					callback(source, copied)
 
@@ -204,19 +200,19 @@ class PBAdapter:
 		if raw is None:
 			backups = ListBackupAction(backup_filter=BackupFilter().requires_non_temporary_backup(), limit=1).run()
 			if not backups:
-				raise PBTargetError('没有可用的备份。')
+				raise OperationError('没有可用的备份。')
 			backup = backups[0]
 		else:
 			try:
 				backup_id = BackupIdParser(allow_db_access=True).parse(raw)
 			except BackupIdParser.OffsetBackupNotFound:
-				raise PBTargetError('没有找到匹配的备份。') from None
+				raise OperationError('没有找到匹配的备份。') from None
 			except ValueError:
-				raise PBTargetError('备份参数无效，请使用备份编号、latest 或 ~N。') from None
+				raise OperationError('备份参数无效，请使用备份编号、latest 或 ~N。') from None
 			try:
 				backup = GetBackupAction(backup_id).run()
 			except BackupNotFound:
-				raise PBTargetError(f'备份 #{backup_id} 不存在。') from None
+				raise OperationError(f'备份 #{backup_id} 不存在。') from None
 		return BackupDescription(
 			BackupTarget(backup_id=backup.id, fileset_id_base=backup.fileset_id_base, fileset_id_delta=backup.fileset_id_delta),
 			backup.date_str, TextComponents.backup_comment(backup.comment).to_plain_text(),
