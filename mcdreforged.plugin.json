@@ -10,7 +10,7 @@
     "license": "GPL-3.0-only",
     "dependencies": {
         "python": ">=3.11",
-        "mcdreforged": ">=2.16.0",
+        "mcdreforged": ">=2.15.0",
         "prime_backup": ">=1.14.0"
     },
     "entrypoint": "prime_backup_approval.mcdr_entrypoint",
